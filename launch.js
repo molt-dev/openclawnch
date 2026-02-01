@@ -28,6 +28,17 @@ async function log(type, mint, symbol, data) {
     } catch (e) { console.error("Logging failed:", e.message); }
 }
 
+/**
+ * HELPER: Gets a readable stream for local files or remote URLs
+ */
+async function getImageStream(pathOrUrl) {
+    if (pathOrUrl.startsWith('http')) {
+        const response = await axios.get(pathOrUrl, { responseType: 'stream' });
+        return { stream: response.data, filename: 'token_image.png' };
+    }
+    return { stream: fs.createReadStream(pathOrUrl), filename: 'token_image.png' };
+}
+
 async function main() {
     const [, , cmd, ...args] = process.argv;
 
@@ -37,10 +48,13 @@ async function main() {
             const mint = Keypair.generate();
 
             try {
-                // 1. UPLOAD METADATA DIRECTLY (Fixes missing image issue)
+                // 1. Resolve image source (Local vs URL)
+                const { stream, filename } = await getImageStream(imgPath);
+
+                // 2. Upload metadata directly with explicit filename for MIME detection
                 console.log("Pinning metadata to IPFS...");
                 const formData = new FormData();
-                formData.append("file", fs.createReadStream(imgPath));
+                formData.append("file", stream, { filename }); // Explicit filename fix
                 formData.append("name", name);
                 formData.append("symbol", symbol);
                 formData.append("description", desc);
@@ -51,17 +65,13 @@ async function main() {
                 });
 
                 const metadataUri = metaRes.data.metadataUri;
-                console.log(`IPFS Link: ${metadataUri}`);
+                console.log(`IPFS Link Secured: ${metadataUri}`);
 
-                // 2. CREATE TOKEN WITH PRE-PINNED URI
+                // 3. Create token with pre-pinned URI
                 const res = await sdk.createAndBuy(
                     wallet.payer,
                     mint,
-                    {
-                        name: name,
-                        symbol: symbol,
-                        uri: metadataUri // Passing URI directly bypasses SDK upload logic
-                    },
+                    { name: name, symbol: symbol, uri: metadataUri },
                     BigInt(0.01 * LAMPORTS_PER_SOL)
                 );
 
