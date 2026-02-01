@@ -37,7 +37,8 @@ async function main() {
             const mint = Keypair.generate();
 
             try {
-                // 1. UPLOAD TO IPFS DIRECTLY (Fixes placeholder issues)
+                // 1. UPLOAD METADATA DIRECTLY (Fixes missing image issue)
+                console.log("Pinning metadata to IPFS...");
                 const formData = new FormData();
                 formData.append("file", fs.createReadStream(imgPath));
                 formData.append("name", name);
@@ -48,13 +49,19 @@ async function main() {
                 const metaRes = await axios.post("https://pump.fun/api/ipfs", formData, {
                     headers: formData.getHeaders(),
                 });
-                const metadataUri = metaRes.data.metadataUri;
 
-                // 2. LAUNCH ON-CHAIN
+                const metadataUri = metaRes.data.metadataUri;
+                console.log(`IPFS Link: ${metadataUri}`);
+
+                // 2. CREATE TOKEN WITH PRE-PINNED URI
                 const res = await sdk.createAndBuy(
                     wallet.payer,
                     mint,
-                    { name, symbol, description: desc, uri: metadataUri },
+                    {
+                        name: name,
+                        symbol: symbol,
+                        uri: metadataUri // Passing URI directly bypasses SDK upload logic
+                    },
                     BigInt(0.01 * LAMPORTS_PER_SOL)
                 );
 
@@ -67,15 +74,8 @@ async function main() {
 
         case 'cto':
             const [ctoMint] = args;
-            // INDUSTRY STANDARD CTO: Revoke Authority to make it a community token
-            try {
-                console.log(`Initiating CTO for ${ctoMint}. Revoking all authorities...`);
-                // Note: The original launcher cannot transfer "Creator Fees" but can 
-                // prove the coin is safe by revoking authority on the SPL token.
-                // In this context, we log the CTO to let the frontend know the dev is OUT.
-                await log('cto', ctoMint, '', { status: 'Community Owned', dev_exited: true });
-                console.log(`CTO_LOGGED: Token ${ctoMint} is now marked as community-owned.`);
-            } catch (e) { console.error("CTO logging failed:", e.message); }
+            await log('cto', ctoMint, '', { status: 'Community Owned' });
+            console.log(`CTO_SUCCESS: ${ctoMint} marked as community-owned.`);
             break;
 
         case 'swap':
