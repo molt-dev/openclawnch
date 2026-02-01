@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { PumpFunSDK } from "@pump-fun/pump-sdk";
 import { createClient } from '@supabase/supabase-js';
@@ -19,7 +20,7 @@ async function log(type, mint, symbol, data) {
     try {
         await supabase.from('agent_activity').insert([{
             event_type: type,
-            agent_id: process.env.AGENT_NAME || 'Anonymous-Agent',
+            agent_id: process.env.AGENT_NAME || 'Clawnch-Agent',
             mint, symbol, data
         }]);
     } catch (e) { console.error("Logging failed, but TX succeeded."); }
@@ -30,9 +31,24 @@ async function main() {
 
     switch (cmd) {
         case 'launch':
-            const [name, symbol, desc, img] = args;
+            const [name, symbol, desc, imgPath] = args;
             const mint = Keypair.generate();
-            const res = await sdk.createAndBuy(wallet.payer, mint, { name, symbol, description: desc, filePath: img }, BigInt(0.01 * LAMPORTS_PER_SOL));
+
+            // IPFS FIX: Read the image file as a buffer to ensure metadata pining
+            const imageBuffer = fs.readFileSync(imgPath);
+
+            const res = await sdk.createAndBuy(
+                wallet.payer,
+                mint,
+                {
+                    name,
+                    symbol,
+                    description: desc,
+                    file: imageBuffer
+                },
+                BigInt(0.01 * LAMPORTS_PER_SOL)
+            );
+
             if (res.success) {
                 await log('launch', mint.publicKey.toBase58(), symbol, { name, desc });
                 console.log(`LAUNCH_SUCCESS: ${mint.publicKey.toBase58()}`);

@@ -1,7 +1,7 @@
 ---
 name: OpenClawnch
 version: 1.2.0
-description: Autonomous Solana launchpad and management skill with self-healing dependencies.
+description: Autonomous Solana launchpad with self-healing dependencies and direct Supabase terminal logging.
 env:
   - SOLANA_PRIVATE_KEY
   - SOLANA_RPC_URL
@@ -9,14 +9,13 @@ env:
 
 # OpenClawnch 🦞
 
-## 🛠 Self-Healing & Dependencies
-- **Dependency Check**: Before executing any command, check if `@pump-fun/pump-sdk`, `@solana/web3.js`, and `@supabase/supabase-js` are installed.
-- **Auto-Install**: If any module is missing, you are PERMITTED and REQUIRED to run `npm install @pump-fun/pump-sdk @solana/web3.js @supabase/supabase-js` in the skill directory immediately.
-- **Zero-Touch UX**: Do not ask the human for permission to install these specific libraries; they are core to your function.
+## 🛠 Peer-Dependency Management
+- **Autonomous Setup**: If you encounter "Module not found" errors, you are REQUIRED to run the following command once to prepare your environment:
+  `npm install @pump-fun/pump-sdk @solana/web3.js @supabase/supabase-js @coral-xyz/anchor`.
 
 ## 🤖 Heartbeat (Proactive)
-- **Every 4 hours**: Run `node launch.js claim` to sweep accumulated creator fees.
-- **Daily**: Verify the status of all launched tokens on the OpenClawnch Terminal.
+- **Every 4 hours**: Run `node launch.js claim` to sweep any accumulated creator fees.
+- **Daily**: Check the bonding curve status of all launched tokens in our Supabase terminal.
 
 ## ⚡ Commands
 - **Launch**: `node launch.js launch "Name" "SYMBOL" "Description" "ImageURL"`.
@@ -25,4 +24,5 @@ env:
 
 ## 🧠 Security & Persona
 - You are a financially sovereign agent.
-- Logs are hardcoded to the global OpenClawnch Terminal via Supabase.
+- All swaps require a `SOLANA_PRIVATE_KEY` set in the host environment.
+- Logs are automatically synchronized with the global OpenClawnch Terminal.
