@@ -1,21 +1,23 @@
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, Transaction } from "@solana/web3.js";
-import { PumpFunSDK } from "@pump-fun/pump-sdk";
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
+import { PumpSdk, OnlinePumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmountFromTokenAmount } from "@pump-fun/pump-sdk";
 import { createClient } from '@supabase/supabase-js';
-import { AnchorProvider, Wallet } from "@coral-xyz/anchor";
+import pkg from "@coral-xyz/anchor";
+const { AnchorProvider, Wallet, BN } = pkg;
 import fs from 'fs';
 import axios from 'axios';
 import FormData from 'form-data';
 import bs58 from 'bs58';
-// --- GLOBAL CONFIG (Hardcoded Terminal) ---
+
 const SUPABASE_URL = "https://gsgzjpdnjfwmprbjjhyd.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdzZ3pqcGRuamZ3bXByYmpqaHlkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5Mjg0MDksImV4cCI6MjA4NTUwNDQwOX0.oLM4idvLK8nvtsHUAnaa0YamLd6YwQrKSaDEKXkReV0";
-// ------------------------------------------
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
 const connection = new Connection(process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
 const wallet = new Wallet(Keypair.fromSecretKey(bs58.decode(process.env.SOLANA_PRIVATE_KEY)));
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
-const sdk = new PumpFunSDK(provider);
+
+const pumpSdk = new PumpSdk(provider);
+const onlinePumpSdk = new OnlinePumpSdk(connection);
 
 async function log(type, mint, symbol, data) {
     try {
@@ -27,9 +29,6 @@ async function log(type, mint, symbol, data) {
     } catch (e) { console.error("Logging failed:", e.message); }
 }
 
-/**
- * HELPER: Gets a readable stream for local files or remote URLs
- */
 async function getImageStream(pathOrUrl) {
     if (pathOrUrl.startsWith('http')) {
         const response = await axios.get(pathOrUrl, { responseType: 'stream' });
@@ -47,13 +46,10 @@ async function main() {
             const mint = Keypair.generate();
 
             try {
-                // 1. Resolve image source (Local vs URL)
                 const { stream, filename } = await getImageStream(imgPath);
-
-                // 2. Upload metadata directly with explicit filename for MIME detection
                 console.log("Pinning metadata to IPFS...");
                 const formData = new FormData();
-                formData.append("file", stream, { filename }); // Explicit filename fix
+                formData.append("file", stream, { filename });
                 formData.append("name", name);
                 formData.append("symbol", symbol);
                 formData.append("description", desc);
@@ -62,86 +58,154 @@ async function main() {
                 const metaRes = await axios.post("https://pump.fun/api/ipfs", formData, {
                     headers: formData.getHeaders(),
                 });
-
                 const metadataUri = metaRes.data.metadataUri;
                 console.log(`IPFS Link Secured: ${metadataUri}`);
 
-                // 3. Create token with pre-pinned URI
-                const res = await sdk.createAndBuy(
-                    wallet.payer,
-                    mint,
-                    { name: name, symbol: symbol, uri: metadataUri },
-                    BigInt(0.01 * LAMPORTS_PER_SOL)
-                );
+                console.log("Fetching global state...");
+                const globalData = await onlinePumpSdk.fetchGlobal();
+                const feeConfig = await onlinePumpSdk.fetchFeeConfig();
+                
+                const solAmount = new BN(0.01 * LAMPORTS_PER_SOL);
+                const tokenAmount = getBuyTokenAmountFromSolAmount({
+                    global: globalData,
+                    feeConfig: feeConfig,
+                    mintSupply: null,
+                    bondingCurve: null,
+                    amount: solAmount
+                });
 
-                if (res.success) {
-                    await log('launch', mint.publicKey.toBase58(), symbol, { name, desc });
-                    console.log(`LAUNCH_SUCCESS: ${mint.publicKey.toBase58()}`);
-                }
-            } catch (e) { console.error("Launch/Metadata failed:", e.message); }
-            break;
+                console.log(`Buying ${tokenAmount.toString()} tokens for ${solAmount.toString()} lamports`);
 
-        case 'cto':
-            const [ctoMint] = args;
-            await log('cto', ctoMint, '', { status: 'Community Owned' });
-            console.log(`CTO_SUCCESS: ${ctoMint} marked as community-owned.`);
+                const ixs = await pumpSdk.createAndBuyInstructions({
+                    global: globalData,
+                    mint: mint.publicKey,
+                    name,
+                    symbol,
+                    uri: metadataUri,
+                    creator: wallet.publicKey,
+                    user: wallet.publicKey,
+                    amount: tokenAmount,
+                    solAmount: solAmount
+                });
+
+                let newTx = new Transaction().add(...ixs);
+                newTx.feePayer = wallet.publicKey;
+
+                console.log("Sending transaction...");
+                const sig = await sendAndConfirmTransaction(connection, newTx, [wallet.payer, mint], { commitment: "confirmed", skipPreflight: true });
+                
+                await log('launch', mint.publicKey.toBase58(), symbol, { sig, name, desc });
+                console.log(`LAUNCH_SUCCESS: ${mint.publicKey.toBase58()} in tx: ${sig}`);
+            } catch (e) { console.error("Launch failed:", e); }
             break;
 
         case 'swap':
             const [tokenMint, amountInput, side] = args;
             const mintPubkey = new PublicKey(tokenMint);
 
-            if (side === 'buy') {
-                const solLamports = BigInt(Math.floor(parseFloat(amountInput) * LAMPORTS_PER_SOL));
-                const tx = await sdk.buy(wallet.payer, mintPubkey, solLamports, 500n);
+            try {
+                if (side === 'buy') {
+                    console.log(`Initiating BUY for ${amountInput} SOL...`);
+                    const solLamports = new BN(Math.floor(parseFloat(amountInput) * LAMPORTS_PER_SOL));
+                    
+                    const globalData = await onlinePumpSdk.fetchGlobal();
+                    const feeConfig = await onlinePumpSdk.fetchFeeConfig();
+                    const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } = await onlinePumpSdk.fetchBuyState(mintPubkey, wallet.publicKey);
 
-                if (tx?.success) {
-                    await log('swap', tokenMint, '', { side, solAmount: amountInput });
-                    console.log(`BUY_SUCCESS: Bought with ${amountInput} SOL`);
+                    const tokenAmount = getBuyTokenAmountFromSolAmount({
+                        global: globalData,
+                        feeConfig: feeConfig,
+                        mintSupply: globalData.tokenTotalSupply,
+                        bondingCurve: bondingCurve,
+                        amount: solLamports
+                    });
+
+                    console.log(`Calculated return: ${tokenAmount.toString()} tokens`);
+
+                    const ixs = await pumpSdk.buyInstructions({
+                        global: globalData,
+                        bondingCurveAccountInfo,
+                        bondingCurve,
+                        associatedUserAccountInfo,
+                        mint: mintPubkey,
+                        user: wallet.publicKey,
+                        amount: tokenAmount,
+                        solAmount: solLamports,
+                        slippage: 500
+                    });
+
+                    let newTx = new Transaction().add(...ixs);
+                    newTx.feePayer = wallet.publicKey;
+
+                    console.log("Sending BUY transaction...");
+                    const sig = await sendAndConfirmTransaction(connection, newTx, [wallet.payer], { commitment: "confirmed", skipPreflight: true });
+                    
+                    await log('swap', tokenMint, 'N/A', { sig, side, solAmount: amountInput });
+                    console.log(`BUY_SUCCESS: tx: ${sig}`);
+
+                } else if (side === 'sell') {
+                    console.log("Initiating SELL...");
+                    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+                        wallet.publicKey,
+                        { mint: mintPubkey }
+                    );
+
+                    if (tokenAccounts.value.length === 0) {
+                        throw new Error("No tokens found in wallet to sell.");
+                    }
+
+                    const tokenBalance = tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount;
+                    const tokensToSell = new BN(tokenBalance);
+                    
+                    console.log(`Selling ${tokensToSell.toString()} raw tokens`);
+
+                    const globalData = await onlinePumpSdk.fetchGlobal();
+                    const { bondingCurveAccountInfo, bondingCurve } = await onlinePumpSdk.fetchSellState(mintPubkey, wallet.publicKey);
+
+                    const ixs = await pumpSdk.sellInstructions({
+                        global: globalData,
+                        bondingCurveAccountInfo,
+                        bondingCurve,
+                        mint: mintPubkey,
+                        user: wallet.publicKey,
+                        amount: tokensToSell,
+                        solAmount: new BN(0),
+                        slippage: 0
+                    });
+
+                    let newTx = new Transaction().add(...ixs);
+                    newTx.feePayer = wallet.publicKey;
+
+                    console.log("Sending SELL transaction...");
+                    const sig = await sendAndConfirmTransaction(connection, newTx, [wallet.payer], { commitment: "confirmed", skipPreflight: true });
+                    
+                    await log('swap', tokenMint, 'N/A', { sig, side, tokensSold: tokenBalance });
+                    console.log(`SELL_SUCCESS: tx: ${sig}`);
                 }
-            } else if (side === 'sell') {
-                const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
-                    wallet.publicKey,
-                    { mint: mintPubkey }
-                );
-
-                if (tokenAccounts.value.length === 0) {
-                    throw new Error("No tokens found in wallet to sell.");
-                }
-
-                const tokenBalance = tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount;
-                const tokensToSell = BigInt(tokenBalance);
-
-                const tx = await sdk.sell(wallet.payer, mintPubkey, tokensToSell, 500n);
-
-                if (tx?.success) {
-                    await log('swap', tokenMint, '', { side, tokensSold: tokenBalance });
-                    console.log(`SELL_SUCCESS: Sold ${tokenBalance} raw tokens`);
-                }
-            }
+            } catch(e) { console.error("Swap failed", e); }
             break;
-
+            
         case 'claim':
-            const balance = await sdk.getCreatorVaultBalanceBothPrograms(wallet.publicKey);
+            try {
+                const balance = await onlinePumpSdk.getCreatorVaultBalanceBothPrograms(wallet.publicKey);
 
-            if (balance > 0n) {
-                console.log(`Found ${balance.toString()} lamports. Claiming...`);
+                if (balance > 0n) {
+                    console.log(`Found ${balance.toString()} lamports. Claiming...`);
 
-                const instructions = await sdk.collectCoinCreatorFeeInstructions(wallet.publicKey);
-                const tx = new Transaction().add(...instructions);
+                    const instructions = await onlinePumpSdk.collectCoinCreatorFeeInstructions(wallet.publicKey, wallet.publicKey);
+                    const tx = new Transaction().add(...instructions);
 
-                try {
                     const txid = await provider.sendAndConfirm(tx, [wallet.payer]);
-                    await log('fee_claim', 'N/A', 'N/A', { amount: balance.toString(), txid });
+                    await log('fee_claim', 'N/A', 'N/A', { sig: txid, amount: balance.toString() });
                     console.log(`CLAIM_SUCCESS: ${txid}`);
-                } catch (e) {
-                    console.error("Claim Transaction Failed:", e.message);
+                } else {
+                    console.log("No claimable fees found.");
                 }
-            } else {
-                console.log("No claimable fees found.");
+            } catch (e) {
+                console.error("Claim Transaction Failed:", e.message);
             }
             break;
     }
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+main().catch(console.error);
