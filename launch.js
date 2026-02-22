@@ -1,12 +1,11 @@
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, Transaction } from "@solana/web3.js";
 import { PumpFunSDK } from "@pump-fun/pump-sdk";
 import { createClient } from '@supabase/supabase-js';
-import { AnchorProvider } from "@coral-xyz/anchor";
-import NodeWallet from "@coral-xyz/anchor/dist/cjs/nodewallet";
+import { AnchorProvider, Wallet } from "@coral-xyz/anchor";
 import fs from 'fs';
 import axios from 'axios';
 import FormData from 'form-data';
-
+import bs58 from 'bs58';
 // --- GLOBAL CONFIG (Hardcoded Terminal) ---
 const SUPABASE_URL = "https://gsgzjpdnjfwmprbjjhyd.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdzZ3pqcGRuamZ3bXByYmpqaHlkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5Mjg0MDksImV4cCI6MjA4NTUwNDQwOX0.oLM4idvLK8nvtsHUAnaa0YamLd6YwQrKSaDEKXkReV0";
@@ -14,7 +13,7 @@ const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const connection = new Connection(process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
-const wallet = new NodeWallet(Keypair.fromSecretKey(Uint8Array.from(JSON.parse(process.env.SOLANA_PRIVATE_KEY))));
+const wallet = new Wallet(Keypair.fromSecretKey(bs58.decode(process.env.SOLANA_PRIVATE_KEY)));
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
 const sdk = new PumpFunSDK(provider);
 
@@ -89,18 +88,57 @@ async function main() {
             break;
 
         case 'swap':
-            const [tokenMint, solAmount, side] = args;
-            const tx = side === 'buy'
-                ? await sdk.buy(wallet.payer, new PublicKey(tokenMint), BigInt(solAmount * LAMPORTS_PER_SOL), 500n)
-                : await sdk.sell(wallet.payer, new PublicKey(tokenMint), BigInt(solAmount * LAMPORTS_PER_SOL), 500n);
-            if (tx.success) await log('swap', tokenMint, '', { side, solAmount });
+            const [tokenMint, amountInput, side] = args;
+            const mintPubkey = new PublicKey(tokenMint);
+
+            if (side === 'buy') {
+                const solLamports = BigInt(Math.floor(parseFloat(amountInput) * LAMPORTS_PER_SOL));
+                const tx = await sdk.buy(wallet.payer, mintPubkey, solLamports, 500n);
+
+                if (tx?.success) {
+                    await log('swap', tokenMint, '', { side, solAmount: amountInput });
+                    console.log(`BUY_SUCCESS: Bought with ${amountInput} SOL`);
+                }
+            } else if (side === 'sell') {
+                const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+                    wallet.publicKey,
+                    { mint: mintPubkey }
+                );
+
+                if (tokenAccounts.value.length === 0) {
+                    throw new Error("No tokens found in wallet to sell.");
+                }
+
+                const tokenBalance = tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount;
+                const tokensToSell = BigInt(tokenBalance);
+
+                const tx = await sdk.sell(wallet.payer, mintPubkey, tokensToSell, 500n);
+
+                if (tx?.success) {
+                    await log('swap', tokenMint, '', { side, tokensSold: tokenBalance });
+                    console.log(`SELL_SUCCESS: Sold ${tokenBalance} raw tokens`);
+                }
+            }
             break;
 
         case 'claim':
             const balance = await sdk.getCreatorVaultBalanceBothPrograms(wallet.publicKey);
+
             if (balance > 0n) {
-                await sdk.collectCoinCreatorFeeInstructions(wallet.publicKey);
-                await log('fee_claim', 'N/A', 'N/A', { amount: balance.toString() });
+                console.log(`Found ${balance.toString()} lamports. Claiming...`);
+
+                const instructions = await sdk.collectCoinCreatorFeeInstructions(wallet.publicKey);
+                const tx = new Transaction().add(...instructions);
+
+                try {
+                    const txid = await provider.sendAndConfirm(tx, [wallet.payer]);
+                    await log('fee_claim', 'N/A', 'N/A', { amount: balance.toString(), txid });
+                    console.log(`CLAIM_SUCCESS: ${txid}`);
+                } catch (e) {
+                    console.error("Claim Transaction Failed:", e.message);
+                }
+            } else {
+                console.log("No claimable fees found.");
             }
             break;
     }

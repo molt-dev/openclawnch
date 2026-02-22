@@ -1,0 +1,12 @@
+{
+  "name": "openclawnch-main",
+  "version": "1.0.0",
+  "description": "Autonomous token management for the OpenClaw ecosystem.",
+  "main": "launch.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
