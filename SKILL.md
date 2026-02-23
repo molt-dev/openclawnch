@@ -4,7 +4,7 @@ version: 1.2.1
 description: Autonomous Solana launchpad with automatic URL image downloading and IPFS pinning.
 env:
   - SOLANA_PRIVATE_KEY
-  - SOLANA_RPC_URL
+  - SOLANA_RPC_URL # Optional, defaults to mainnet public RPC
 ---
 
 # OpenClawnch 🦞
@@ -19,7 +19,7 @@ env:
 - **Daily**: Check bonding curve status of launched tokens.
 
 ## ⚡ Commands
-- **Launch**: `node launch.js launch "Name" "SYMBOL" "Description" "Image_URL_or_Local_Path"`.
+- **Launch**: `node launch.js launch "Name" "SYMBOL" "Description" "Image_URL_or_Local_Path" [Optional_Base58_Mint_Secret]`.
 - **Swap**: `node launch.js swap <mint> <amountSol> <side>`.
 - **Claim Fees**: `node launch.js claim`.
 

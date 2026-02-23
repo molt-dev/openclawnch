@@ -42,8 +42,8 @@ async function main() {
 
     switch (cmd) {
         case 'launch':
-            const [name, symbol, desc, imgPath] = args;
-            const mint = Keypair.generate();
+            const [name, symbol, desc, imgPath, optMintSecret] = args;
+            const mint = optMintSecret ? Keypair.fromSecretKey(bs58.decode(optMintSecret)) : Keypair.generate();
 
             try {
                 const { stream, filename } = await getImageStream(imgPath);
@@ -64,7 +64,7 @@ async function main() {
                 console.log("Fetching global state...");
                 const globalData = await onlinePumpSdk.fetchGlobal();
                 const feeConfig = await onlinePumpSdk.fetchFeeConfig();
-                
+
                 const solAmount = new BN(0.01 * LAMPORTS_PER_SOL);
                 const tokenAmount = getBuyTokenAmountFromSolAmount({
                     global: globalData,
@@ -93,7 +93,7 @@ async function main() {
 
                 console.log("Sending transaction...");
                 const sig = await sendAndConfirmTransaction(connection, newTx, [wallet.payer, mint], { commitment: "confirmed", skipPreflight: true });
-                
+
                 await log('launch', mint.publicKey.toBase58(), symbol, { sig, name, desc });
                 console.log(`LAUNCH_SUCCESS: ${mint.publicKey.toBase58()} in tx: ${sig}`);
             } catch (e) { console.error("Launch failed:", e); }
@@ -107,7 +107,7 @@ async function main() {
                 if (side === 'buy') {
                     console.log(`Initiating BUY for ${amountInput} SOL...`);
                     const solLamports = new BN(Math.floor(parseFloat(amountInput) * LAMPORTS_PER_SOL));
-                    
+
                     const globalData = await onlinePumpSdk.fetchGlobal();
                     const feeConfig = await onlinePumpSdk.fetchFeeConfig();
                     const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } = await onlinePumpSdk.fetchBuyState(mintPubkey, wallet.publicKey);
@@ -139,7 +139,7 @@ async function main() {
 
                     console.log("Sending BUY transaction...");
                     const sig = await sendAndConfirmTransaction(connection, newTx, [wallet.payer], { commitment: "confirmed", skipPreflight: true });
-                    
+
                     await log('swap', tokenMint, 'N/A', { sig, side, solAmount: amountInput });
                     console.log(`BUY_SUCCESS: tx: ${sig}`);
 
@@ -156,7 +156,7 @@ async function main() {
 
                     const tokenBalance = tokenAccounts.value[0].account.data.parsed.info.tokenAmount.amount;
                     const tokensToSell = new BN(tokenBalance);
-                    
+
                     console.log(`Selling ${tokensToSell.toString()} raw tokens`);
 
                     const globalData = await onlinePumpSdk.fetchGlobal();
@@ -178,13 +178,13 @@ async function main() {
 
                     console.log("Sending SELL transaction...");
                     const sig = await sendAndConfirmTransaction(connection, newTx, [wallet.payer], { commitment: "confirmed", skipPreflight: true });
-                    
+
                     await log('swap', tokenMint, 'N/A', { sig, side, tokensSold: tokenBalance });
                     console.log(`SELL_SUCCESS: tx: ${sig}`);
                 }
-            } catch(e) { console.error("Swap failed", e); }
+            } catch (e) { console.error("Swap failed", e); }
             break;
-            
+
         case 'claim':
             try {
                 const balance = await onlinePumpSdk.getCreatorVaultBalanceBothPrograms(wallet.publicKey);
